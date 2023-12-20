@@ -1,16 +1,20 @@
 ---
 layout:  post
-title:   c++类与对象
-date:   3-12-20 14:31:25 发布
-author:  'zhangtao'
+title:   "c++类与对象"
+date:   2023-12-20 12:00:00
+author:  'Xiangxiao'
 header-img: 'img/post-bg-2015.jpg'
 catalog:   false
 tags:
--c++
--c++
--开发语言
+- c++
+- c++
+- 开发语言
 
 ---
+
+
+
+
 
 #### 
 
