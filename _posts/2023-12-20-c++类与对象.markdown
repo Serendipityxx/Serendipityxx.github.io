@@ -1,0 +1,660 @@
+---
+layout:  post
+title:   c++类与对象
+date:   3-12-20 14:31:25 发布
+author:  'zhangtao'
+header-img: 'img/post-bg-2015.jpg'
+catalog:   false
+tags:
+-c++
+-c++
+-开发语言
+
+---
+
+#### 
+
+#### 写在前面：
+
+&nbsp; &nbsp; &nbsp; &nbsp; C++在C语言的基础上增加了面向对象编程，c++作为面向对象语言，类就是它的核心特性，类（也可以叫做用户自定义类型）。类在C++的学习中还是很重要的，一个类就是一个实体的抽象表达。类里面可以有变量也可以有函数。
+
+## 一、private、public、protected区别
+
+先来看一个简单的例子：
+
+```java
+#include<iostream>
+
+using namespace std;
+
+
+class A{
+	
+	//私有类型
+private:
+	int x1;
+
+	//公共类型
+public:
+	int x2;
+	
+	//保护类型
+protected:
+	int x3;
+	
+};
+
+int main()
+{
+	A a; //类的初始化，初始化了一个对象a
+	
+	a.x2=2;//对于公共类型，可以直接使用.运算符访问，其他如私有类型和保护类型则访问不到；
+	
+	cout<<a.x2<<endl;
+	
+	return 0;
+}
+```
+
+我们可以发现初始化A类的对象a，使用.运算符只能获取到公共类型，而其他两个类型直接获取不到，那么这三个类型有什么区别呢？
+
+- 私有类型（private）：成员和类默认的访问修饰符类型就是private类型，私有变量在程序类的外部是不可访问的，也是不可查看的，只有类和友元函数可以访问私有变量。 
+- 公共类型（public）：公共类型修饰的成员成为公有成员，公有成员在程序类的外部是可以直接访问到的，可以直接使用类初始化的对象使用.运算符获取或者修改。 
+- 保护类型（protected）：保护成员和私有成员大致一样，只是保护成员在这个类派生出来的类中是可以访问的
+
+如图所示，可以看到在程序类的外部通过类初始化的对象使用.运算符只能访问到共有成员。
+
+
+![img](../images\1703054843570.png)
+
+## 二、构造函数、析构函数
+
+类里面除了上面说的成员变量之外，还可以有成员函数。成员函数也被上述成员访问类型修饰符限制，但是一般我们会把成员函数放在公有成员里面，以供程序类外部访问。这里我们要说的是构造函数和析构函数。
+
+### 1、构造函数
+
+首先构造函数是类的一种特殊的成员函数，它会在类每次创建新对象时执行，它的名称和类的名称是一样的，并且不会返回任何类型，也不会返回void。构造函数可以用于为某些成员变量初始化。
+
+&nbsp;先看一个简单的构造函数的实例：
+
+```java
+#include <iostream>
+
+using namespace std;
+
+class Line
+{
+public:
+	Line();  // 这是构造函数，没有返回值，名称和类的名称一样
+	void setLength( double len );//这些是普通的成员函数
+	double getLength( void );//这些是普通的成员函数
+	
+private:
+	double length;
+};
+
+// 成员函数定义，包括构造函数
+Line::Line(void)
+{
+	cout << "对象被创建了！" << endl;
+}
+
+void Line::setLength( double len )
+{
+	length = len;
+}
+/*
+  私有成员变量不能在程序类外部访问，但是可以在程序类内部访问，
+  我们通过使用一个公共函数方法返回私有变量的值，达到访问或者改变私有变
+  量的效果。
+ */
+double Line::getLength( void )
+{
+	return length;
+}
+// 程序的主函数
+int main( )
+{
+	Line line;//对象进行初始化的时候就会执行一次构造函数
+	
+	// 设置长度
+	line.setLength(6.0); 
+	cout << "Length of line : " << line.getLength() <<endl;
+	
+	return 0;
+}
+```
+
+这只是一个简单的构造函数，它没有任何参数，它是默认存在的，我们可以在里面加参数，实现对成员变量初始化的效果。如下
+
+```java
+#include <iostream>
+
+using namespace std;
+
+class Line
+{
+public:
+	void setLength( double len );
+	double getLength( void );
+	Line(double len);  // 这是构造函数
+	
+private:
+	double length;
+};
+
+// 成员函数定义，包括构造函数
+Line::Line( double len)
+{
+	cout << "对象被创建了, length = " << len << endl;
+	length = len;//这里就使用构造函数的参数对成员变量进行了初始化
+}
+
+void Line::setLength( double len )
+{
+	length = len;
+}
+
+double Line::getLength( void )
+{
+	return length;
+}
+// 程序的主函数
+int main( )
+{
+	Line line(10.0);
+	
+	// 获取默认设置的长度
+	cout << "Length of line : " << line.getLength() <<endl;
+	// 再次设置长度
+	line.setLength(6.0); 
+	cout << "Length of line : " << line.getLength() <<endl;
+	
+	return 0;
+}
+```
+
+当然除了以上在成员函数内部对成员变量进行初始化之外，我们也可以使用初始化列表对成员进行初始化，使用初始化列表的语法如下：
+
+```java
+Line::Line( double len): length(len)
+{
+    cout << "对象被创建了, length = " << len << endl;
+}
+
+
+//上面的代码段的效果等同于如下
+
+Line::Line( double len)
+{
+    cout << "对象被创建了, length = " << len << endl;
+    length = len;
+}
+```
+
+这是对单个成员变量初始化的写法，如果对多个成员变量进行初始化的化，可以这么写：
+
+```java
+C::C( double a, double b, double c): X(a), Y(b), Z(c)
+{
+  ....
+}
+
+//其中X,Y,Z是成员变量，a,b,c是构造函数的参数
+```
+
+##### 拷贝构造函数
+
+普通类型变量直接的复制很简单，直接将值赋给另一个变量即可，但是在对于类变量的话就会比较麻烦，所以我们这里引入一个叫拷贝构造函数。
+
+拷贝构造函数的示例如下：
+
+```java
+#include<iostream>
+
+
+using namespace std;
+
+class A{
+	
+private:
+	int num;
+	
+public:
+	A();
+	A(const A &a);
+	~A();
+	void ShowNum();
+	void SetNum(int num);
+};
+
+A::A(){
+	cout<<"默认构造函数被调用了"<<endl;
+}
+
+A::A(const A &a){
+	cout<<"拷贝构造函数被调用了"<<endl;
+	this->num=a.num;
+}
+
+A::~A(){
+	cout<<"调用了析构函数"<<endl;
+	delete &num;
+	
+}
+
+void A::ShowNum()
+{
+	cout<<"num = "<<num<<endl;
+}
+
+void A::SetNum(int num){
+	this->num=num;
+}
+
+int main()
+{
+	A a;
+	a.SetNum(10);
+	a.ShowNum();
+	
+	A a2 = a;//会调用拷贝构造函数
+	a2.ShowNum();
+	
+	
+	
+	return 0;
+}
+```
+
+&nbsp;上述的代码运行的结果如下：
+
+```java
+默认构造函数被调用了
+num = 10
+拷贝构造函数被调用了
+num = 10
+调用了析构函数
+```
+
+&nbsp;可以发现最开始初始化一个对象a之后，然后使用这个对象给新创建的对象a2赋值的时候，就会调用拷贝构造函数。
+
+除了以上情况会调用拷贝构造函数之外，还有其他的情况也会调用拷贝构造函数，关于拷贝构造函数调用的情况总结如下：
+
+- 通过使用一个同类型对象来初始化新创建的对象 
+- 赋值对象把它作为参数传递给函数 
+- 复制对象把它作为返回值
+
+### 2、析构函数
+
+讲完了构造函数的作用之后，析构函数的作用也是很重要的，它也是类的一种特殊的成员函数，构造函数在对象的创建的时候被调用，析构函数则在对象被删除的时候调用。
+
+析构函数的名称和类的名称也是一样，只是在名称前面加了一个波浪号（~）作为前缀，析构函数不会返回任何值也不能带有任何参数。析构函数的作用在于程序结束或者对象的生命周期结束之前释放资源。
+
+一个简单的析构函数，默认析构函数如下：
+
+```java
+#include <iostream>
+
+using namespace std;
+
+class Line
+{
+public:
+	void setLength( double len );
+	double getLength( void );
+	Line();   // 这是构造函数声明
+	~Line();  // 这是析构函数声明
+	//不返回任何值，不带有任何参数
+	
+private:
+	double length;
+};
+
+// 成员函数定义，包括构造函数
+Line::Line(void)
+{
+	cout << "Object is being created" << endl;
+}
+Line::~Line(void)
+{
+	cout << "Object is being deleted" << endl;
+}
+
+void Line::setLength( double len )
+{
+	length = len;
+}
+
+double Line::getLength( void )
+{
+	return length;
+}
+// 程序的主函数
+int main( )
+{
+	Line line;
+	
+	// 设置长度
+	line.setLength(6.0); 
+	cout << "Length of line : " << line.getLength() <<endl;
+	
+	return 0;
+}
+```
+
+## 三、友元函数
+
+在类与对象中除了前面默认存在并且支持自定义的构造函数和析构函数之外，友元函数也是比较重要的，类的友元函数定义在类的，但是他有权访问类的私有成员和保护成员，虽然友元函数的原型在类中定义，但是友元函数不是成员函数。**友元可以是一个函数也可以是一个类**，如果是一个类的话，这个类被称为友元类，这个类的所有成员都是友元。
+
+声明一个函数是一个类的友元，需要在类定义中该函数原型的定义之前使用**friend**关键字；声明一个类为友元类，则需要如下这么写：
+
+```java
+class A{
+	
+private:
+	int id;
+public:
+	int GetId();
+	
+};
+
+class Box
+{
+	double width;
+public:
+	friend class A;//友元类，该类中所有成员都为友元
+	double length;
+	friend void printWidth( Box box );//友元函数
+	void setWidth( double wid );
+};
+```
+
+接下来我们测试一下，在友元函数中直接访问类的私有成员：
+
+```java
+#include<iostream>
+
+using namespace std;
+
+class A{
+	
+private:
+	int id;
+public:
+	int GetId();
+	
+};
+
+class Box
+{
+private:
+	double width;
+public:
+	friend class A;//友元类，该类中所有成员都为友元
+	double length;
+	friend void printWidth( Box box );//友元函数
+	void setWidth( double wid );
+};
+
+int A::GetId(){
+	
+	cout<<this->id<<endl;
+	return this->id;
+}
+
+void printWidth(Box box){
+	cout<<box.width<<endl; //因为该函数是类的友元函数，所以可以直接访问到私有成员width
+}
+
+void Box::setWidth( double wid ){
+	this->width=wid;
+}
+
+int main()
+{
+	Box box;
+	box.setWidth(100.0);
+	
+	printWidth(box);
+	
+	
+	return 0;
+}
+```
+
+通过程序的执行结果可知，他是可以访问到类的私有变量的。
+
+**写到这，原神抽卡歪了！！！气死了**
+
+## 四、内联函数
+
+内联函数在学习函数的时候就学习过，简单的来说，就是我们程序在调用函数的时候需要付出一定的调用过程的实践消耗，而内联函数就是指函数在程序编译的时候就会在被调用地方复制一个副本，这样子就避免了调用的时间消耗，但是这样做又会增大整个程序的体量，是一个典型的空间换时间的方法。对内联函数的修改都需要重新启动编译函数的客户端。
+
+如果要定义一个内联函数的话就需要在函数前面放置关键之 inline，在调用函数之前需要对函数进行定义，如果已定义的函数多余一行，编译器就会自动忽略inline限定符。
+
+在类中定义的函数都是内联函数，即使没有使用inline关键字。
+
+内联函数的模板：
+
+```java
+inline int Max(int x, int y)
+{
+   return (x > y)? x : y;
+}
+```
+
+适合使用内联函数的情况：
+
+- 函数实现的功能简单，执行的速度快，语句少
+
+不是和使用内联函数的情况：
+
+- 函数的执行时间长，函数逻辑复杂，执行的时间远大于调用的时间。
+
+><strong>调用内联函数的语句前必须已经出现内联函数的定义（即整个函数体），而不能只出现内联函数的声明。</strong>
+
+## 五、this指针
+
+顾名思义，这是一个指针，它指向的是这个对象。他的作用是每个对象都可以使用this指针来访问自己的地址 ，this指针是每个类的隐藏参数，在成员函数的内部，可以使用它来调用成员变量或者其他的成员函数，友元函数没有this指针，友元不是类的成员。
+
+```java
+#include <iostream>
+
+using namespace std;
+
+class Box
+{
+public:
+	// 构造函数定义
+	Box(double l=2.0, double b=2.0, double h=2.0)
+	{
+		cout <<"Constructor called." << endl;
+		length = l;//也可以写成 this.length = 1; 使用this指针调用成员变量
+		breadth = b;
+		height = h;
+	}
+	double Volume()
+	{
+		return length * breadth * height;
+	}
+	int compare(Box box)
+	{
+		return this->Volume() > box.Volume();//使用this指针调用成员函数
+	}
+private:
+	double length;     // Length of a box
+	double breadth;    // Breadth of a box
+	double height;     // Height of a box
+};
+
+int main(void)
+{
+	Box Box1(3.3, 1.2, 1.5);    // Declare box1
+	Box Box2(8.5, 6.0, 2.0);    // Declare box2
+	
+	if(Box1.compare(Box2))
+	{
+		cout << "Box2 is smaller than Box1" <<endl;
+	}
+	else
+	{
+		cout << "Box2 is equal to or larger than Box1" <<endl;
+	}
+	return 0;
+}
+```
+
+#### 指向类的指针
+
+指向类的指针其实和上面说的this指针类似，他和一个对象的区别就是，对象使用.运算符调用自己的成员，而一个指向类的指针则使用-&gt;运算符调用类的成员。
+
+```java
+#include<iostream>
+
+using namespace std;
+
+class A {
+private:
+	int num;
+public:
+	int num2;
+	A(int n1,int n2,int n3):num(n1),num2(n2),num3(n3){};//构造函数
+	void func();
+protected:
+	int num3;
+};
+
+void A::func(){
+	cout<<"该成员函数被调用了"<<endl;
+}
+
+int main()
+{
+	A a(1,2,3);
+	
+	
+	A * ptr = &a;
+	
+	ptr->func();//指向类的指针通过->调用类的成员
+	a.func();//对象则使用.调用类的成员
+	
+	return 0;
+}
+```
+
+## 六、类的静态成员
+
+在类中有一个很特别的成员，叫做类的静态成员，类的静态成员分为类的静态成员变量和类的静态成员函数，我们先讲类的静态成员变量。
+
+#### 类的静态成员变量
+
+静态成员变量是在类中使用static声明的成员变量，它和普通的成员变量区别就是，不管我们初始化多少个类的对象，但是静态成员变量只有一个，静态成员变量在类中是共享的，如果不存在其他的初始话语句，在创建静态成员变量的时候就会自动将其初始化为0。
+
+```java
+#include<iostream>
+
+using namespace std;
+
+class A {
+private:
+	int num;
+	
+public:
+	int num2;
+	static int count;//声明一个类的静态成员变量
+	A(int n1,int n2,int n3):num(n1),num2(n2),num3(n3){this->count ++;};//构造函数
+	void func();
+protected:
+	int num3;
+};
+
+void A::func(){
+	cout<<"该成员函数被调用了"<<endl;
+}
+int A::count = 10;//对静态成员变量进行初始化，不初始化的话，它会被默认初始化为0
+
+
+int main()
+{
+	A a(1,2,3);
+	
+	
+	A * ptr = &a;
+	
+	ptr->func();//指向类的指针通过->调用类的成员
+	a.func();//对象则使用.调用类的成员
+	
+	cout<<A::count<<endl;//直接使用A::count就直接可以访问到这个静态成员变量
+	
+	return 0;
+}
+```
+
+#### 静态成员函数
+
+将函数也声明为静态的，这样就可以将函数和类的对象独立开来，静态成员函数即使在类的对象不存在的情况下，也可以通过类名加范围解析运算符::访问调用。
+
+需要注意的是，静态成员函数只能访问静态成员变量，不能访问到其他的静态成员函数和成类外部的函数，静态成员函数也不能访问this指针。
+
+```java
+#include <iostream>
+ 
+using namespace std;
+
+class Box
+{
+   public:
+      static int objectCount;
+      // 构造函数定义
+      Box(double l=2.0, double b=2.0, double h=2.0)
+      {
+         cout <<"Constructor called." << endl;
+         length = l;
+         breadth = b;
+         height = h;
+         // 每次创建对象时增加 1
+         objectCount++;
+      }
+      double Volume()
+      {
+         return length * breadth * height;
+      }
+      static int getCount()
+      {
+         return objectCount;
+      }
+   private:
+      double length;     // 长度
+      double breadth;    // 宽度
+      double height;     // 高度
+};
+
+// 初始化类 Box 的静态成员
+int Box::objectCount = 0;
+
+int main(void)
+{
+  
+   // 在创建对象之前输出对象的总数
+   cout << "Inital Stage Count: " << Box::getCount() << endl;
+
+   Box Box1(3.3, 1.2, 1.5);    // 声明 box1
+   Box Box2(8.5, 6.0, 2.0);    // 声明 box2
+
+   // 在创建对象之后输出对象的总数
+   cout << "Final Stage Count: " << Box::getCount() << endl;
+
+   return 0;
+}
+```
+
+### 写在最后：
+
+在c++中，类的引入是较于C语言的一大区别，它意味着c++是面向对象语言，不再是c语言这种面向过程语言，有关于类是非常常用的，所以做此篇博客记录一下自己的复习。
+
+
+-  简单了解函数调用过程  
+-  函数调用流程  
+-  编程狮c++篇 
+
