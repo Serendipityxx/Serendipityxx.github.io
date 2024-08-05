@@ -1,0 +1,76 @@
+---
+layout:  post
+title:   "匿名管道"
+date:   2024-8-5 14:52:00
+author:  'Xiangxiao'
+header-img: 'img/post-bg-2015.jpg'
+catalog:   false
+tags:
+- c
+- 进程通信
+
+---
+
+# 匿名管道
+
+匿名管道的实现
+
+```c
+#include<stdio.h>
+#include<unistd.h>
+#include<sys/types.h>
+#include<sys/wait.h>
+#include<string.h>
+#include<stdlib.h>
+
+
+int main(int argc, char const *argv[])
+{
+    int fd[2];
+    pid_t pid;
+    char buffer[128];
+
+    if(pipe(fd) < 0)
+        printf("creat pipe faild\n");
+    
+    pid = fork();
+    if(pid < 0)
+    {
+        printf("create fork fail\n");
+    }else if (pid > 0)
+    {
+        //父进程
+        sleep(3);
+        printf("this is father,pid = %d\n", getpid());
+        close(fd[0]);
+        write(fd[1], "hello highgo", strlen("hello highgo"));
+        wait(NULL);
+
+    }else {
+        //子进程
+        printf("this is child,pid = %d, ppid = %d\n",getpid(),getppid());
+        close(fd[1]);
+        read(fd[0],buffer,sizeof(buffer));
+        printf("%s\n",buffer);
+    }
+    
+    return 0;
+}
+
+```
+
+在上述代码中，fd\[2]就是匿名管道，fd\[0]是读的区域，fd\[1]是写的区域。
+
+如果内容在写之前读取，则该进程将会被挂起。
+
+文件缓冲区是有限的，可以通过命令查看
+
+```bash
+cat /proc/sys/fs/file-max
+```
+
+![](image/image_XHLAINNbF6.png)
+
+可以通过ulimit进行修改
+
+[深入了解Linux管道缓冲大小设置 (linux pipe 缓冲大小) – 后浪云 (idc.net)](https://www.idc.net/help/131655/ "深入了解Linux管道缓冲大小设置 (linux pipe 缓冲大小) – 后浪云 (idc.net)")
