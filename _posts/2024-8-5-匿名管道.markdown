@@ -69,7 +69,7 @@ int main(int argc, char const *argv[])
 cat /proc/sys/fs/file-max
 ```
 
-![](image/image_XHLAINNbF6.png)
+![](/img/in-post/image/image_XHLAINNbF6.png)
 
 可以通过ulimit进行修改
 

@@ -17,7 +17,7 @@ tags:
 
 在使用postgres的时候，有很多表是我们一开始安装好数据库就存在的，这些表称为系统表，他们记载一些数据库信息，比如我们做运维工作常用的pg\_stat\_activity;我们在数据库中查询这张表可以发现他存储了一些数据库连接信息。如下所示：
 
-![](image/image_Q5FvIZSrXd.png)
+![](/img/in-post/image/image_Q5FvIZSrXd.png)
 
 本次的任务就是新增一张系统表pg\_test，这张表有三个字段，oid、id、ipaddr，字段所属的类型分别为Oid、int32、text，并且初始化一些值，实现能够在psql命令中使用select 命令查询得到。
 
@@ -27,7 +27,7 @@ tags:
 
 比如说我们查询pg\_extension这张表，我们可以发现它具有这些信息
 
-![](image/image_-NKBWSZMof.png)
+![](/img/in-post/image/image_-NKBWSZMof.png)
 
 首先就是它具有一些字段属性，然后就是你会发现他还有index索引，有主键索引，有唯一性索引，然后我们在源码中搜索pg\_extension找到这张系统表的声明，观察这张表的实现，对其进行模仿写出我们自己的pg\_test系统表。
 
@@ -86,15 +86,15 @@ DECLARE_UNIQUE_INDEX(pg_extension_name_index, 3081, ExtensionNameIndexId, on pg_
 
 首先它写了预处理指令，防止该头文件被重复定义，然后他引用了两个头文件，其中genbki头文件它包含了一些宏定义，我们可以打开很多系统表的定义，可以发现都包含了这个头文件，另外一个是pg\_extension\_d头文件，他比较特殊，我们打开这个头文件可以发现有如下信息：
 
-![](image/image_zFHQU56k7k.png)
+![](/img/in-post/image/image_zFHQU56k7k.png)
 
 其中比较显眼的我们可以看到用英文写着不要编辑这个文件，也就是说明这个文件是自动生成的，再观察其他部分，发现这个文件里面有很多的宏定义，对照前面的pg\_extension头文件里面的信息一起观察，可以发现
 
-![](image/image_xMk-VKnSGC.png)
+![](/img/in-post/image/image_xMk-VKnSGC.png)
 
 上图所示前八个分别对应了pg\_extension系统表的八个属性，然后最后一个宏定义则是表示具有八个属性列，这一点在我们后面对系统表进行操作的时候会常用到，然后还有如下几个宏：
 
-![](image/image_xikVw-QsZr.png)
+![](/img/in-post/image/image_xikVw-QsZr.png)
 
 其中第一个是指系统表的唯一标识的id值，这一点在前面的博客中已经提到过了，如何获取未被使用的id值，后面两个是索引的id值。
 
@@ -133,7 +133,7 @@ DECLARE_INDEX(pg_test_relid_ipaddr_index,389,TestRelidipaddrIndexId,on pg_test u
 
 在这其中CATALOG的方式创建可能与我们之前学习的创建一个结构体的方法不同，但是其实他也是创建了一个结构体，转到CATALOG的定义处可以发现其实也是创建了一个结构体。
 
-![](image/image_u4lEUCOZQS.png)
+![](/img/in-post/image/image_u4lEUCOZQS.png)
 
 然后值得一说的是它对应三个参数，name即系统表的名字，oid即系统表的唯一标识，oidmacro即系统表的唯一标识oid的宏定义名称。
 
@@ -145,19 +145,19 @@ DECLARE_INDEX(pg_test_relid_ipaddr_index,389,TestRelidipaddrIndexId,on pg_test u
 
 细心的朋友可以发现在这个文件夹里面不仅存在.h头文件，还存在一个.dat的文件，这里以pg\_tablespace.dat文件为例，点进去可以发现，里面分别对应该系统表的所有属性列，再在数据库中查询这张系统表，查询结果如下图，也就是说这里存储的就是系统表的初始值。
 
-![](image/image_r-SdY8EHN-.png)
+![](/img/in-post/image/image_r-SdY8EHN-.png)
 
-![](image/image_5wknX9A1qr.png)
+![](/img/in-post/image/image_5wknX9A1qr.png)
 
 所以我们也创建一个pg\_test.dat文件，并且按照上面的格式对数据进行初始化，但是有一点需要格外注意，这里的oid也是不可以重复的值哦！也是需要查询未被使用id作为可以初始化的id。
 
-![](image/image_ljtWtZGw8-.png)
+![](/img/in-post/image/image_ljtWtZGw8-.png)
 
 ## 3、 编写Makefile文件加载新增的头文件
 
 在catalog下面的Makefile中添加如下所示的内容：
 
-![](image/image_PJ3ocpNb8h.png)
+![](/img/in-post/image/image_PJ3ocpNb8h.png)
 
 ## 4、重新configure和编译安装
 
@@ -175,7 +175,7 @@ DECLARE_INDEX(pg_test_relid_ipaddr_index,389,TestRelidipaddrIndexId,on pg_test u
 
 首先使用psql命令登录数据库，然后使用\d+命令查看pg\_test系统表的详细定义，最后使用select \* from pg\_test命令查询该系统表是否存在初始化的数据。验证结果图如下：
 
-![](image/image_PekLlAm9ql.png)
+![](/img/in-post/image/image_PekLlAm9ql.png)
 
 ## 6、错误：
 
@@ -183,10 +183,10 @@ DECLARE_INDEX(pg_test_relid_ipaddr_index,389,TestRelidipaddrIndexId,on pg_test u
 
 解决方法：是因为这个文件是自动生成的，目前还没有进行编译，自然就还没有生成，所以会报错，忽略即可。
 
-![](image/image_5kAnvaTz5c.png)
+![](/img/in-post/image/image_5kAnvaTz5c.png)
 
 问题描述：在执行make命令的时候出现如下图所示报错
 
 解决办法：报错出现的原因是因为所使用的oid值重复了，这里再使用unused\_oids命令查询未被使用的oid即可
 
-![](image/image_TmC4vC1Wxu.png)
+![](/img/in-post/image/image_TmC4vC1Wxu.png)

@@ -26,7 +26,7 @@ tags:
 
 pg\_extension\_test.control文件是用于控制拓展的文件，里面主要填写一些例如拓展的描述、拓展的版本、拓展的位置等信息，例如pg\_stat\_statements拓展里面就有这些信息：
 
-![](image/image_cTASKEslZj.png)
+![](/img/in-post/image/image_cTASKEslZj.png)
 
 其中第一行是这个拓展的名字，comment字段是指这个拓展的描述，default\_version是指拓展的使用版本，module\_pathname是指拓展文件夹存放的位置，relocatable表示这个拓展是否可以重定位。在这里，它的值是 true，意味着这个拓展可以被移动到不同的目录下，并且仍然可以正常工作。所以我们这里就可以编写自己的pg\_extension\_test.control文件：
 
@@ -42,7 +42,7 @@ relocatable = true
 
 即编写pg\_extension\_test--1.0.sql文件，该文件中使用的是sql创建函数的语法，表示该插件被创建的时候需要创建的函数。
 
-![](image/image_giqBHEXq1q.png)
+![](/img/in-post/image/image_giqBHEXq1q.png)
 
 可以看到pg\_prewarm拓展的sql文件中编写的内容，第一行表示如果想使用1.1版本的拓展，则使用这个命令进行更新，然后下面就是实现这个函数的语句，用于修改一个已经存在的函数属性。
 
@@ -83,15 +83,15 @@ Datum myrand_uint(PG_FUNCTION_ARGS){
 
 其中两个头文件，postgres包含了核心数据类型和宏定义，fmgr提供了用于创建外部函数的框架。然后是PG\_MODULE\_MAGIC是一个宏，它必须出现在每个PostgresSQL的动态可加载模块中，用于验证模块是否是postgres兼容的。PG\_FUNCTION\_INFO\_V1(myrand\_uint);是一个宏，它会包括一些函数的声明之类的信息，详细内容可以看下图：
 
-![](image/image_zoMinl85qg.png)
+![](/img/in-post/image/image_zoMinl85qg.png)
 
 &#x20;详细观察函数的实现，其中Datum是函数的返回值类型，这里Datum是Postgres中用于函数返回值的通用类，其中PG\_FUNCTION\_ARGS也是一个宏，通过转到生命发现他是FunctionCallInfo对象，而这个对象是FunctionCallInfoBaseData的别名，找到这个结构体，具体如下：
 
-![](image/image_JiTjIyknlI.png)
+![](/img/in-post/image/image_JiTjIyknlI.png)
 
 在其中比较好理解的是后面三个，isnull是指函数的返回是否是空，如果是空，则需指定isnull等于true，nargs是指num of args，也就是函数参数的个数，而args数组则是存储函数的参数。这一点，我们在函数中写的类似int min = PG\_GETARG\_UINT32(0);可以看出来，转到PG\_GETARG\_UINT32的宏定义，可以发现其实他也就是在获取args数组里面的值，只是多了一些转换的步骤。
 
-![](image/image__Z99SMB4Lu.png)
+![](/img/in-post/image/image__Z99SMB4Lu.png)
 
 &#x20;然后就是函数中比较重要的部分，主体中使用ereport函数，也就是日志的打印，首先这个函数的第一个参数，ERROR表示这个日志的类型是报错，这个参数也可以设置为类似WARNING，表示日志类型是警告，然后第二个参数设置了错误码和错误信息，这个常用于postgres中处理一些错误信息，增强程序的健壮性。然后就是函数的返回，PG\_RETURN\_INT32类型，表示返回的值是int32类型的Datum类型。
 
@@ -133,7 +133,7 @@ make #编译
 make install #安装
 ```
 
-![](image/image_IcDfkdTnnZ.png)
+![](/img/in-post/image/image_IcDfkdTnnZ.png)
 
 ## 3、验证拓展是否实现
 
@@ -143,7 +143,7 @@ make install #安装
 
 结果如下：
 
-![](image/image_UuUzsDXBhg.png)
+![](/img/in-post/image/image_UuUzsDXBhg.png)
 
 执行的结果可能不一样，大家不用在意结果是否都为28.&#x20;
 
@@ -157,4 +157,4 @@ make install #安装
  chown -R postgres:postgres ./pg_extension_test
 ```
 
-![](image/image_hLGxhsgWeW.png)
+![](/img/in-post/image/image_hLGxhsgWeW.png)
