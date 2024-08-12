@@ -1,129 +1,170 @@
 ---
 layout:  post
-title:   "postgres共享哈希表"
-date:   2024-8-12 09:20:00
+title:   "共享内存"
+date:   2024-8-12 09:44:00
 author:  'Xiangxiao'
 header-img: 'img/post-bg-2015.jpg'
 catalog:   false
 tags:
 - c
 - 共享哈希表
-- postgres
+- postgres内核
 
 ---
-
-# postgres共享内存
+# postgres共享哈希表
 
 ## 目录
 
-- [1 一、创建内置函数](#1-一创建内置函数)
-- [2 二、创建共享内存的声明shmstring.h文件](#2-二创建共享内存的声明shmstringh文件)
-- [3 三、创建两个函数的实现](#3-三创建两个函数的实现)
-- [4 四、在ipci文件中加载共享内存](#4-四在ipci文件中加载共享内存)
-- [5 五、对哈希表进行操作](#5-五对哈希表进行操作)
-  - [5.1 哈希表的新增](#51-哈希表的新增)
-  - [5.2 哈希表的查找](#52-哈希表的查找)
-- [6 六、hash\_search函数](#6-六hash_search函数)
+- [1 😀哈希表实体的创建](#1-哈希表实体的创建)
+- [2 哈希表的初始化](#2-哈希表的初始化)
+- [3 对哈希表进行操作](#3-对哈希表进行操作)
+  - [3.1 哈希表的新增](#31-哈希表的新增)
+  - [3.2 哈希表的查找](#32-哈希表的查找)
+- [4 hash\_search函数](#4-hash_search函数)
 
-## 1 一、创建内置函数
+## 1 😀哈希表实体的创建
 
-共享内存的使用，这里是开两个psql连接，一个连接调用内置函数set\_string设置一个字符串到共享内存中，另一个连接调用内置函数get\_string从共享内存中获取字符串并返回。
-
-在include/catalog/pg\_proc.dat中增加内置函数的声明
-
-```perl
-{ oid => '111', descr => 'set a string in shame', prorettype => 'text',
-  proargtypes => 'text', prosrc => 'set_string'},
-{ oid => '226', descr => 'get a string in shame', prorettype => 'text',
-  proargtypes => '', prosrc => 'set_string'},
-```
-
-## 2 二、创建共享内存的声明shmstring.h文件
-
-然后在include/utils下面创建共享内存的声明
+首先，写一个hashtable的实体
 
 ```c
-#ifndef SHMSTRING_H
-#define SHMSTRING_H
+#ifndef HASHTABLE_H
+#define HASHTABLE_H
 
 #include "postgres.h"
 #include "storage/lwlock.h"
+#include "utils/hsearch.h"
 
+typedef struct
+{
+    /* data */
+    char* key;
+    int32 val;
+}HashTableEntry;
 
-#define SHARED_MEM_NAME "my_shared_string"
-#define MAX_SHARED_STRING_SIZE 1024
+extern Size HashTableShmemSize(void);
+extern void Hashtable_init_shmem(void);
 
-typedef struct {
-    char data[MAX_SHARED_STRING_SIZE];
-    Size len;
-    LWLock mutex; // spinlock for synchronization
-} SharedString;
+extern  HTAB * shared_hashtable;
 
-
-extern bool string_init_shmem(void);
-extern Size StringshareShmemSize(void);
-
-extern SharedString *shared_string;
 #endif
 ```
 
-该声明需要定义一个结构体，是为共享内存的结构，还需定义两个函数，一个是StringshareShmemSize函数，负责计算返回该共享内存的大小，用于在postgres启动的时候提前预留大小。
+这里需要有两个函数的声明和一个变量的声明。
 
-另一个是string\_init\_shmem函数，用于在pg初始化共享内存的时候进行初始化。
+其中HashTableShmemSize是计算hash表在共享内存中占多大的大小，Hashtable\_init\_shmem是实现hash表的初始化操作。shared\_hashtable是提供给操作的哈希表的名字。
 
-这两个都是自定义函数。
-
-## 3 三、创建两个函数的实现
-
-在backend/uitls/adt下面创建shmstring.c文件，主要实现上面的两个自定义函数。
+然后是对hashtable头文件的实现
 
 ```c
-#include "utils/shmstring.h"
+#include "utils/hashtable.h"
 #include "storage/spin.h"
 #include "postgres.h"
 #include "storage/lwlock.h"
 #include "c.h"
 #include "storage/shmem.h"
 
-SharedString *shared_string = NULL;
+#define MAX_TABLE_SIZE 1024
+
+HTAB * shared_hashtable = NULL;
 
 Size
-StringshareShmemSize(void)
+HashTableShmemSize(void)
 {
-  Size    size = 0;
-
-  size = add_size(size, sizeof(SharedString));
-
-  return size;
+    Size size = 0;
+    size = add_size(size, sizeof(HashTableEntry)*1024);
+    return size;
 }
 
+void 
+Hashtable_init_shmem(void)
+{
+    HASHCTL hash_ctl;
+    long    init_table_size,
+            max_table_size;
 
-bool
-string_init_shmem(void) {
-    bool found;
-    Size sz;
-    sz = StringshareShmemSize();
-    shared_string = (SharedString *) ShmemInitStruct(SHARED_MEM_NAME,sz,&found);
-    memset(shared_string, 0, sizeof(SharedString));
-    LWLockInitialize(&shared_string->mutex,LWLockNewTrancheId());
-    return true;
+    max_table_size = MAX_TABLE_SIZE;
+    init_table_size = max_table_size / 2;
+    hash_ctl.keysize = sizeof(char*);
+    hash_ctl.entrysize = sizeof(HashTableEntry);
+
+    shared_hashtable = ShmemInitHash("test hashtable",
+                     init_table_size,
+                     max_table_size,
+                     &hash_ctl,
+                     HASH_ELEM | HASH_BLOBS | HASH_PARTITION);
 }
 ```
 
-## 4 四、在ipci文件中加载共享内存
+在这里设置这个hashtable最大能存储MAX\_TABLE\_SIZE 也就是1024个，然后通过HashTableShmemSize函数计算大小，大小就为1024个实体累加的总大小。
 
-在ipci.c文件中首先将shmstring所需要的大小加入到pg要申请的共享内存总大小，然后再将共享内存初始化的函数加到整个共享内存加载和初始化的地方。
+Hashtable\_init\_shmem对hashtable进行初始化，初始化创建的时候需要有个hashtable的控制信息结构体，如下所示：
 
-```c#
-size = add_size(size, StringshareShmemSize());
-
-string_init_shmem();
-
+```c
+typedef struct HASHCTL
+{
+  /* Used if HASH_PARTITION flag is set: */
+  long    num_partitions; /* # partitions (must be power of 2) */
+  /* Used if HASH_SEGMENT flag is set: */
+  long    ssize;      /* segment size */
+  /* Used if HASH_DIRSIZE flag is set: */
+  long    dsize;      /* (initial) directory size */
+  long    max_dsize;    /* limit to dsize if dir size is limited */
+  /* Used if HASH_ELEM flag is set (which is now required): */
+  Size    keysize;    /* hash key length in bytes */
+  Size    entrysize;    /* total user element size in bytes */
+  /* Used if HASH_FUNCTION flag is set: */
+  HashValueFunc hash;      /* hash function */
+  /* Used if HASH_COMPARE flag is set: */
+  HashCompareFunc match;    /* key comparison function */
+  /* Used if HASH_KEYCOPY flag is set: */
+  HashCopyFunc keycopy;    /* key copying function */
+  /* Used if HASH_ALLOC flag is set: */
+  HashAllocFunc alloc;    /* memory allocator */
+  /* Used if HASH_CONTEXT flag is set: */
+  MemoryContext hcxt;      /* memory context to use for allocations */
+  /* Used if HASH_SHARED_MEM flag is set: */
+  HASHHDR    *hctl;      /* location of header in shared mem */
+} HASHCTL;
 ```
 
-## 5 五、对哈希表进行操作
+## 2 哈希表的初始化
 
-### 5.1 哈希表的新增
+然后创建hashtable的函数如下，其中name为hashtable的名字，init\_size为初始化哈希桶的数量，max\_size为最大哈希桶的数量，infoP就是上面提到的控制信息，hash\_flags是指创建哈希表的时候需要指定的一些配置信息，具体如下所示。
+
+```c
+HTAB *ShmemInitHash(const char *name, long init_size, long max_size,
+               HASHCTL *infoP, int hash_flags);
+```
+
+```c
+/* Flag bits f or hash_create; most indicate which parameters are supplied */
+#define HASH_PARTITION  0x0001  /* Hashtable is used w/partitioned locking */
+#define HASH_SEGMENT  0x0002  /* Set segment size */
+#define HASH_DIRSIZE  0x0004  /* Set directory size (initial and max) */
+#define HASH_ELEM    0x0008  /* Set keysize and entrysize (now required!) */
+#define HASH_STRINGS  0x0010  /* Select support functions for string keys */
+#define HASH_BLOBS    0x0020  /* Select support functions for binary keys */
+#define HASH_FUNCTION  0x0040  /* Set user defined hash function */
+#define HASH_COMPARE  0x0080  /* Set user defined comparison function */
+#define HASH_KEYCOPY  0x0100  /* Set user defined key-copying function */
+#define HASH_ALLOC    0x0200  /* Set memory allocator */
+#define HASH_CONTEXT  0x0400  /* Set memory allocation context */
+#define HASH_SHARED_MEM 0x0800  /* Hashtable is in shared memory */
+#define HASH_ATTACH    0x1000  /* Do not initialize hctl */
+#define HASH_FIXED_SIZE 0x2000  /* Initial size is a hard limit */
+```
+
+然后跟共享内存一样，需要在系统初始化共享内存的时候将需要的大小统计进去，并且一起初始化。
+
+```c
+size = add_size(size, HashTableShmemSize());
+
+Hashtable_init_shmem();
+```
+
+## 3 对哈希表进行操作
+
+### 3.1 哈希表的新增
 
 首先是对哈希表的增加操作，我们要添加一个哈希键值对进去，首先得申请一个实体类型，然后将他的key值和value值赋给它，然后通过hash\_search的方法将这个key值传进去查找，如果查找到了就返回这个key值对应的bucket地址，当然我们这里是做新增操作，所以肯定是查找不到的，这个时候他会返回一个新的bucket地址，我们将这个类型强转为HashTableEntry也就是我们自己定义的实体类型，然后将从函数参数获取的values值赋给这个返回的实体类型的val值。具体通过以下代码实现：
 
@@ -147,7 +188,7 @@ set_hashstring(PG_FUNCTION_ARGS)
 
 ```
 
-### 5.2 哈希表的查找
+### 3.2 哈希表的查找
 
 然后就是哈希表的查找操作，同样的这里也需要声明一个哈希表的实体类型，用于接收哈希表查找返回的bucket强转之后的哈希实体类型，然后也是使用了hash\_search函数，将需要查找的key值传入，获取查找到的元素，然后再获取该实体的val值。
 
@@ -174,7 +215,7 @@ get_hashstring(PG_FUNCTION_ARGS)
 }
 ```
 
-## 6 六、hash\_search函数
+## 4 hash\_search函数
 
 hash\_search函数是一个可用作哈希表的新增，修改，查找的函数，他的函数声明如下：
 
