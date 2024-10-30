@@ -196,7 +196,7 @@ typedef enum {
 ```
 可以参考下面的eg：
 
-![alt text](/_posts/postimg/image1.png)
+![alt text](/_posts/postimg/image1.jpg)
 
 在使用之前首先需要先定义一个全局的参数类型！
 ## 1.1 初始化guc参数
@@ -846,5 +846,5 @@ SelectConfigFiles(const char *userDoption, const char *progname)
 }
 ```
 通过上述三个步骤设置完参数后还要检验参数的合法性。比如，数据目录的用户ID应该等于当前进程的有效用户ID、数据目录应该禁止组用户和其他用户的一切访问、缓冲区的数量至少是允许连接的进程数的两倍并且至少为16等。如果一切合法，则将当前目录转入数据目录，然后进行后续的操作。
-![alt text](/_posts/postimg/image2.png)
+![alt text](/_posts/postimg/image2.jpg)
 # 2 在pg内核中新增guc参数
