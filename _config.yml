@@ -13,10 +13,10 @@ future: true
 
 # SNS settings
 RSS: false
-weibo_username: xiangxiao
+# weibo_username: xiangxiao
 zhihu_username: xiangxiao
-github_username: xiangxiao
-twitter_username: xiangxiao
+github_username: Serendipityxx
+# twitter_username: xiangxiao
 #facebook_username:  huxpro
 #linkedin_username:  firstname-lastname-idxxxx
 
