@@ -848,3 +848,78 @@ SelectConfigFiles(const char *userDoption, const char *progname)
 通过上述三个步骤设置完参数后还要检验参数的合法性。比如，数据目录的用户ID应该等于当前进程的有效用户ID、数据目录应该禁止组用户和其他用户的一切访问、缓冲区的数量至少是允许连接的进程数的两倍并且至少为16等。如果一切合法，则将当前目录转入数据目录，然后进行后续的操作。
 ![alt text](/img/postimg/image2.jpg)
 # 2 在pg内核中新增guc参数
+在guc.c中定义一个变量保存guc参数
+```c
+bool        testguc;
+```
+然后在当前文件中的对应这个类型的数组里面增加对这个参数的定义，这里我们申明的是一个bool类型的guc参数，所以加入到`ConfigNameBool`数组中，如下所示：
+```c
+	{
+		{"testguc", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("test guc in pg"),
+			NULL,
+		},
+		&testguc,
+		false,
+		NULL,NULL,NULL
+	},
+```
+然后在guc.h中extern这个变量就可以了：
+```c
+extern      bool        testguc;
+```
+![alt text](/img/postimg/image.png)
+
+# 3 在插件中新增guc参数
+首先创建好插件，然后直接在插件对应的c文件中使用`DefineCustomBoolVariable`函数新增一个guc参数，这里我们新增还是一个bool类型的，所以使用的是`DefineCustomBoolVariable`这个函数，如果申请的是其他类型的参数的话就需要使用其他类型的函数去实现，
+
+然后这里需要在`_PG_init`这个函数中去增加这个参数，并且插件中需要增加`PG_MODULE_MAGIC`宏定义。
+
+具体实现如下:
+```c
+#include "postgres.h"
+#include "utils/guc.h"
+
+PG_MODULE_MAGIC;
+
+static bool testgucinextension;
+
+
+void
+_PG_init(void)
+{
+    DefineCustomBoolVariable("testgucinextension",
+							 "test guc in extension",
+							 NULL,
+							 &testgucinextension,
+							 false,
+							 PGC_SUSET,
+							 false,
+							 NULL,
+							 NULL,
+							 NULL);
+}
+```
+插件对应的Makefile文件内容如下：
+```makefile
+MODULE_big = testguc
+OBJS = \
+	$(WIN32RES) \
+	testguc.o
+
+# EXTENSION = testguc
+PGFILEDESC = "testguc -- test use guc in extension "
+
+ifdef USE_PGXS
+PG_CONFIG = pg_config
+PGXS := $(shell $(PG_CONFIG) --pgxs)
+include $(PGXS)
+else
+subdir = contrib/testguc
+top_builddir = ../..
+include $(top_builddir)/src/Makefile.global
+include $(top_srcdir)/contrib/contrib-global.mk
+endif
+
+SHLIB_LINK += $(filter -lssl -lcrypto -lssleay32 -leay32, $(LIBS))
+```
