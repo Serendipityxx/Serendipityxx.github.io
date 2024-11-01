@@ -307,6 +307,7 @@ if (check_waiters)
 ```
 ### 2.2.3 Extension拓展轻量级锁
 方法一是通过`RequestNamedLWLockTranche`函数和`GetNamedLWLockTranche`函数来实现。其中`RequestNamedLWLockTranche`函数负责注册Tranche的名字以及自己所需要的轻量级锁的数量，`GetNamedLWLockTranche`负责根据Tranche Name来获得对应的锁。每个tranche都有自己唯一的id，全局唯一，tranche id和tranche name一一对应。
+
 ```c
 void
 RequestNamedLWLockTranche(const char *tranche_name, int num_lwlocks)
