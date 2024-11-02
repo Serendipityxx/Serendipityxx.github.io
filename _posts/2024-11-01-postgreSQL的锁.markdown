@@ -431,3 +431,5 @@ LWLockRegisterTranche(int tranche_id, const char *tranche_name)
 ```
 
 ## 2.3 常规锁 Regular Lock
+
+常规锁是用于给数据库对象，例如表，页面，元组等加锁的事务锁，它也是一种读写锁，但是和LWLock不同的在于它将锁等级分为了八个等级，所以他的相容性矩阵就比较麻烦。
