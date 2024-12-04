@@ -12,6 +12,7 @@ tags:
 - postgres内核
 ---
 
+
 # 1 并发控制
 数据库中的对象是共享的，如果同一时间不同的用户对同一个对象进行修改，就会出现数据不一致的情况，违反事务的隔离性原则，所以如果需要实现并发访问，要对这个过程加以控制。
 
@@ -434,3 +435,103 @@ LWLockRegisterTranche(int tranche_id, const char *tranche_name)
 ## 2.3 常规锁 Regular Lock
 
 常规锁是用于给数据库对象，例如表，页面，元组等加锁的事务锁，它也是一种读写锁，但是和LWLock不同的在于它将锁等级分为了八个等级，所以他的相容性矩阵就比较麻烦。
+
+### 2.3.1 常规锁的锁模式
+
+|锁模式	|说明|
+|:--:|:--:|
+|AccessShareLock|当对一个对象进行查询操作的时候`Select`，会申请该类型的锁，AccessShareLock是最低阶别的锁，相当于读写锁中的读锁|
+|RowShareLock|当查询命令指定了`for update/share`时，需要锁定行，会申请该锁|
+|RowExclusiveLock|当数据库对象做增删改操作的时候，会申请该锁，例如对某个表做插入`insert`，删除`delete`，更新`update`操作时，需要申请该锁|
+|ShareUpdateExclusiveLock|当执行`vacuum(non-FULL)`、`analyze`、`create index concurrently`的时候需要申请该锁|
+|ShareLock|主要用于创建索引的时候申请该锁|
+|ShareRowExclusiveLock|和ExclusiveLock相似，但是和RowShareLock兼容|
+|ExclusiveLock|和AccessExclusiveLock类似，但是和最低级别的读锁AccessShareLock兼容|
+|AccessExclusiveLock|在对元数据进行DDL操作的时候会申请该锁，AccessExclusiveLock与其他锁模式都不兼容|
+
+### 2.3.2 常规所的兼容性矩阵：
+
+|锁模式|（1）|（2）|（3）|（4）|（5）|（6）|（7）|（8）|
+|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|
+|AccessShareLock（1）||||||||×|
+|RowShareLock（2）|||||||×|×|
+|RowExclusiveLock（3）|||||×|×|×|×|
+|ShareUpdateExclusiveLock（4）||||×|×|×|×|×|
+|ShareLock（5）|||×|×||×|×|×|
+|ShareRowExclusiveLock（6）|||×|×|×|×|×|×|
+|ExclusiveLock（7）||×|×|×|×|×|×|×|
+|AccessExclusiveLock（8）|×|×|×|×|×|×|×|×|
+
+
+### 2.3.3 锁的演变
+最开始只有两种锁，就是读锁和写锁，即Share和Exclusive
+
+多版本控制，多版本控制要求读写相互不阻塞，所以又引入了AccessShare和AccessExclusive锁，引入MVCC之后`insert\update\delete`操作仍然使用原来的Exclusive锁，但是普通的`select`操作则使用AccessShare锁，这样子就和原来的Exclusive不冲突了，这个时候读写之间互不阻塞，而之前的Share锁的主要应用场景为创建索引，而AccessExclusive锁就用于除了原来的增删改之外的其他的排他性变更（`drop/truncate/reindex/vacuum full`），但是写和写之间还是会有冲突，根据相容性矩阵可以看出在并发写入使用Exclusive锁的时候，这是个表级锁，粒度太大了，会影响并发操作。
+
+所以就引入了意向锁，即RowShare和RowExclusive，意向锁之间都不冲突。
+意向读与读锁兼容，但是与写锁冲突，因为在写的时候去读是徒劳的，用于select for update/share操作
+意向写他与读锁和写锁都冲突，两者都阻止并发修改，用于insert，update，delete
+
+意向锁用于协调表锁和行锁之间的关系，比如说当某个进程想要修改某一行的时候，首先会在这个表上面加一把意向写锁，表示自己会在某一行上进行写操作，然后再在某一行上面增加写锁，
+
+举个例子，假设不存在意向锁。假设进程A获取了表上某行的行锁，持有行上的排他锁意味着进程A可以对这一行执行写入；同时因为不存在意向锁，进程B很顺利地获取了该表上的表级排他锁，这意味着进程B可以对整个表，包括A锁定对那一行进行修改，这就违背了常识逻辑。因此A需要在获取行锁前先获取表上的意向锁，这样后来的B就意识到自己无法获取整个表上的排他锁了（但B依然可以加一个意向锁，获取其他行上的行锁）。
+
+RowShare就是行级共享锁对应的表级意向锁（SELECT FOR SHARE|UPDATE命令获取），而RowExclusive（INSERT|UPDATE|DELETE获取）则是行级排他锁对应的表级意向锁。
+
+
+ShareUpdateExclusiveLock 锁可以让 VACUUM 操作与其他只读事务并发执行，从而不会完全阻塞对表的访问。这种锁级别是介于 SHARE 锁和 EXCLUSIVE 锁之间的一种平衡选择，它比 SHARE 锁更严格，因为它阻止了更新操作，但比 EXCLUSIVE 锁更宽松，因为它允许并发读取。
+
+同理，再比如执行触发器管理操作（创建，删除，启用）时，该操作不应阻塞读取和锁定，但必须禁止一切实际的数据写入，否则就难以判断某条元组的变更是否应该触发触发器。Share锁满足不阻塞读取和锁定的条件，但并不自斥，因此可能出现多个进程在同一个表上并发修改触发器。并发修改触发器会带来很多问题（譬如丢失更新，A将其配置为Replica Trigger，B将其配置为Always Trigger，都反回成功了，以谁为准？）。因此这里也需要一个自斥版本的Share锁，即ShareRowExclusive锁。
+
+### 2.3.4 常规锁的实现
+
+在数据库启动的阶段，PostgreSQL通过InitLocks函数来初始化保存锁对象的共享内存空间，在共享内存中，有两个锁表用于保存锁对象，`LockMethodLockHash`主锁表和`LockMethodProcLockHash`进程锁表。
+
+首先看一下主锁表在内存中的存储结构，具体如下：
+```c
+typedef struct LOCK
+{
+	/* hash key */
+	LOCKTAG		tag;			/* 锁对象的唯一ID */
+
+	/* data */
+	LOCKMASK	grantMask;		/* 这个对象已经持有的锁模式 */
+	LOCKMASK	waitMask;		/* 等待队列中的请求想要获取这个对象的锁模式 */
+	SHM_QUEUE	procLocks;		/* 这个锁上的所有PROCLOCK */
+	PROC_QUEUE	waitProcs;		/* 等待在这个锁上的PGPROC */
+	int			requested[MAX_LOCKMODES];	/* 记录持有和等待这个锁的会话数 */
+	int			nRequested;		/* requested数组的求和 */
+	int			granted[MAX_LOCKMODES]; /* 已经持有的会话数 */
+	int			nGranted;		/* granted数组的求和 */
+} LOCK;
+```
+然后是进程锁表，它用于保存当前进程的事务锁状态，保存的是PROCLOCK结构体，主要是为了建立锁与申请锁的会话之间的关系：
+```c
+typedef struct PROCLOCKTAG
+{
+	/* NB: we assume this struct contains no padding! */
+	LOCK	   *myLock;			/* 链接一个可以加锁的锁对象 */
+	PGPROC	   *myProc;			/* link to PGPROC of owning backend */
+} PROCLOCKTAG;
+
+typedef struct PROCLOCK
+{
+	/* tag */
+	PROCLOCKTAG tag;			/* unique identifier of proclock object */
+
+	/* data */
+	PGPROC	   *groupLeader;	/* proc's lock group leader, or proc itself */
+	LOCKMASK	holdMask;		/* bitmask for lock types currently held */
+	LOCKMASK	releaseMask;	/* bitmask for lock types to be released */
+	SHM_QUEUE	lockLink;		/* list link in LOCK's list of proclocks */
+	SHM_QUEUE	procLink;		/* list link in PGPROC's list of proclocks */
+} PROCLOCK;
+```
+
+
+
+
+# 引用参考文章或链接
+PostgreSQL中的表锁————http://postgres.cn/v2/news/viewone/1/580
+《PostgreSQL技术内幕 事务处理深度探索》
+
