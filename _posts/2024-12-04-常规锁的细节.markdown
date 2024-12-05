@@ -1,0 +1,372 @@
+---
+layout:  post
+title:   "常规锁的细节"
+date:   2024-12-04 18:54:00
+author:  'Xiangxiao'
+header-img: 'img/post-bg-2015.jpg'
+catalog:   false
+tags:
+- c
+- 常规锁
+- postgres内核
+---
+
+
+# 常规锁细节
+
+首先划分一下弱锁和强锁，以ShareUpdateExclusiveLock为分割，在其之前为弱锁，在其之后为强锁，弱锁是相容的，强锁是互斥的。
+
+|弱锁|强锁|
+|:-:|:-:|
+|AccessShareLock、RowShareLock、RowExclusiveLock|ShareLock、ShareRowExclusiveLock、ExclusiveLock、AccessExclusiveLock|
+
+## 常规锁的申请
+
+加锁的API是LockAcquire，但是在里面还是调用的是LockAcquireExtended。
+```c
+LockAcquireResult
+LockAcquire(const LOCKTAG *locktag,	        ：锁tag
+		LOCKMODE lockmode,		：申请锁模式
+		bool sessionLock,		：会话锁 或 事务锁
+		bool dontWait)			：是否等待
+{
+	return LockAcquireExtended(locktag, lockmode, sessionLock, dontWait,
+							   true, NULL);
+}
+
+
+LockAcquireResult
+LockAcquireExtended(const LOCKTAG *locktag,
+		LOCKMODE lockmode,
+		bool sessionLock,
+		bool dontWait,
+		bool reportMemoryError,
+		LOCALLOCK **locallockp)
+{
+	...
+}
+
+```
+
+### 查找本地锁表
+
+在Acquire Lock的时候首先查找的是本地锁表LocalLock，通过hash_search函数搜索，locktag作为查找的key值，返回一个LOCALLOCK*。如果在本地锁表没有找到的话就构造一条放入本地锁表。
+
+```c
+	/*
+	 * Find or create a LOCALLOCK entry for this lock and lockmode
+	 */
+	MemSet(&localtag, 0, sizeof(localtag)); /* must clear padding */
+	localtag.lock = *locktag;
+	localtag.mode = lockmode;
+	//首先查本地锁表
+	locallock = (LOCALLOCK *) hash_search(LockMethodLocalHash,
+										  (void *) &localtag,
+										  HASH_ENTER, &found);
+
+	/*
+	 * if it's a new locallock object, initialize it
+	 */
+	if (!found)//如果不存在的话
+	{
+		locallock->lock = NULL;
+		locallock->proclock = NULL;
+		locallock->hashcode = LockTagHashCode(&(localtag.lock));
+		locallock->nLocks = 0;//没人持有锁
+		locallock->holdsStrongLockCount = false;//没有持有强锁
+		locallock->lockCleared = false;
+		locallock->numLockOwners = 0;
+		locallock->maxLockOwners = 8;
+		locallock->lockOwners = NULL;	/* in case next line fails */
+		locallock->lockOwners = (LOCALLOCKOWNER *)
+			MemoryContextAlloc(TopMemoryContext,
+							   locallock->maxLockOwners * sizeof(LOCALLOCKOWNER));
+	}
+	else//如果查找到了的话，看看是否有足够的空间存储
+	{
+		/* Make sure there will be room to remember the lock */
+		if (locallock->numLockOwners >= locallock->maxLockOwners)
+		{
+			int			newsize = locallock->maxLockOwners * 2;
+
+			locallock->lockOwners = (LOCALLOCKOWNER *)
+				repalloc(locallock->lockOwners,
+						 newsize * sizeof(LOCALLOCKOWNER));
+			locallock->maxLockOwners = newsize;
+		}
+	}
+```
+如果已经持有锁的话，使locallock->nLocks++
+```c
+/*
+	 * If we already hold the lock, we can just increase the count locally.
+	 *
+	 * If lockCleared is already set, caller need not worry about absorbing
+	 * sinval messages related to the lock's object.
+	 */
+	if (locallock->nLocks > 0)
+	{
+		GrantLockLocal(locallock, owner);
+		if (locallock->lockCleared)
+			return LOCKACQUIRE_ALREADY_CLEAR;
+		else
+			return LOCKACQUIRE_ALREADY_HELD;
+	}
+```
+
+### 查找fast path
+
+在查找本地锁表之后，如果本地锁表内没有，则开始查找fast path，首先是条件一：
+- 要求必须是非咨询锁 locktag_lockmethodid == DEFAULT_LOCKMETHOD
+- 要求锁的对象为表 locktag_type == LOCKTAG_RELATION
+- 要求必须是当前数据库的锁 locktag_field1 == MyDatabaseId
+- 要求锁的级别必须是弱锁 (mode) < ShareUpdateExclusiveLock
+
+并且还有个条件需要判断的是，当前fastpath里面已经使用的数量是否超过了最大数。FastPathLocalUseCount < FP_LOCK_SLOTS_PER_BACKEND
+
+```c
+/*
+#define EligibleForRelationFastPath(locktag, mode) \
+	((locktag)->locktag_lockmethodid == DEFAULT_LOCKMETHOD && \
+	(locktag)->locktag_type == LOCKTAG_RELATION && \
+	(locktag)->locktag_field1 == MyDatabaseId && \
+	MyDatabaseId != InvalidOid && \
+	(mode) < ShareUpdateExclusiveLock)
+*/
+	if (EligibleForRelationFastPath(locktag, lockmode) &&
+		FastPathLocalUseCount < FP_LOCK_SLOTS_PER_BACKEND)
+	{
+		uint32		fasthashcode = FastPathStrongLockHashPartition(hashcode);//用hashcode计算在1024数组的哪个位置
+		bool		acquired;
+
+		/*
+		 * LWLockAcquire acts as a memory sequencing point, so it's safe to
+		 * assume that any strong locker whose increment to
+		 * FastPathStrongRelationLocks->counts becomes visible after we test
+		 * it has yet to begin to transfer fast-path locks.
+		 */
+		LWLockAcquire(&MyProc->fpInfoLock, LW_EXCLUSIVE);
+		if (FastPathStrongRelationLocks->count[fasthashcode] != 0)//查找共享内存FastPathStrongRelationLocks是否有强锁
+			acquired = false;//有强锁则加锁失败
+		else
+			acquired = FastPathGrantRelationLock(locktag->locktag_field2,lockmode);//否则开始加锁
+		LWLockRelease(&MyProc->fpInfoLock);
+		if (acquired)
+		{
+			/*
+			 * The locallock might contain stale pointers to some old shared
+			 * objects; we MUST reset these to null before considering the
+			 * lock to be acquired via fast-path.
+			 */
+			locallock->lock = NULL;
+			locallock->proclock = NULL;
+			GrantLockLocal(locallock, owner);//将锁存入LocalLock中
+			return LOCKACQUIRE_OK;
+		}
+	}
+```
+用tag算的hashcode在%1024，落到1024数组FastPathStrongRelationLocks->count的某个位置上。
+
+然后就是查找共享内存fastpath锁表FastPathStrongRelationLocks，检查是否有强锁。有强锁的话则加锁失败，否则使用FastPathGrantRelationLock函数加锁，这里传进去的参数locktag->locktag_field2是表的id，还有锁的模式。
+
+
+FastPathGrantRelationLock逻辑：
+
+- 3个bit一组按顺序查位图是不是空的，是空的就记录下来位置，不是空的就看下oid里面记的是不是需要的，如果正好Oid也是需要的，把当前请求锁模式或进去就可以返回了。
+- 如果查了一遍位图，所有Oid都不是需要的，那就找一个空的位置，把锁级别记录到位图，OID记录到数组，然后返回。
+- 如果查了一遍位图，没有一个空余位置，就返回false了。
+
+```c
+/*
+ * FastPathGrantRelationLock
+ *		Grant lock using per-backend fast-path array, if there is space.
+ */
+static bool
+FastPathGrantRelationLock(Oid relid, LOCKMODE lockmode)
+{
+	uint32		f;
+	uint32		unused_slot = FP_LOCK_SLOTS_PER_BACKEND;//FP_LOCK_SLOTS_PER_BACKEND=16,代表16个槽位
+
+	/* Scan for existing entry for this relid, remembering empty slot. */
+	for (f = 0; f < FP_LOCK_SLOTS_PER_BACKEND; f++)//开始遍历
+	{
+		if (FAST_PATH_GET_BITS(MyProc, f) == 0)//每次遍历三个byte位，判断位图是否为空
+			unused_slot = f;//为空则记录下来
+		else if (MyProc->fpRelId[f] == relid)//不为空则判断oid记录的是否为需要的oid
+		{
+			Assert(!FAST_PATH_CHECK_LOCKMODE(MyProc, f, lockmode));
+			FAST_PATH_SET_LOCKMODE(MyProc, f, lockmode);//是的话则直接将锁模式存进去即可
+			return true;
+		}
+	}
+
+	/* If no existing entry, use any empty slot. 查了一边位图，所有的oid都不是需要的，找一个空的位置记录oid和锁模式 */
+	if (unused_slot < FP_LOCK_SLOTS_PER_BACKEND)
+	{
+		MyProc->fpRelId[unused_slot] = relid;
+		FAST_PATH_SET_LOCKMODE(MyProc, unused_slot, lockmode);
+		++FastPathLocalUseCount;//当前使用计数加一
+		return true;
+	}
+
+	/* No existing entry, and no empty slot. 如果没有空的位置则返回false */
+	return false;
+}
+
+```
+
+进程锁表fpLockBits和fpRelId字段如图所示，fpLockBits每三位标识一个relId对应的锁模式。
+
+
+![进程锁表字段详解](https://ask.qcloudimg.com/http-save/yehe-2061863/6f21dfe04ea8dff659d2840f6e5eaf71.png)
+
+
+### 如果申请的是强锁
+
+如果申请的是强锁：
+
+```c
+if (ConflictsWithRelationFastPath(locktag, lockmode))//如果申请的是一个强锁
+	{
+		uint32		fasthashcode = FastPathStrongLockHashPartition(hashcode);
+
+		BeginStrongLockAcquire(locallock, fasthashcode);//申请强锁
+		if (!FastPathTransferRelationLocks(lockMethodTable, locktag,
+										   hashcode))
+		{
+			AbortStrongLockAcquire();
+			if (locallock->nLocks == 0)
+				RemoveLocalLock(locallock);
+			if (locallockp)
+				*locallockp = NULL;
+			if (reportMemoryError)
+				ereport(ERROR,
+						(errcode(ERRCODE_OUT_OF_MEMORY),
+						 errmsg("out of shared memory"),
+						 errhint("You might need to increase max_locks_per_transaction.")));
+			else
+				return LOCKACQUIRE_NOT_AVAIL;
+		}
+	}
+```
+
+开始处理强锁：BeginStrongLockAcquire
+
+- （重要！相当于禁用了后面这个对象后来的所有fastpath）共享内存强锁表对应位置++FastPathStrongRelationLocks->count[fasthashcode]++;
+- 本地锁记录强锁存在locallock->holdsStrongLockCount = true
+- 全局记录本地强锁StrongLockInProgress = locallock
+
+```c
+static void
+BeginStrongLockAcquire(LOCALLOCK *locallock, uint32 fasthashcode)
+{
+	Assert(StrongLockInProgress == NULL);
+	Assert(locallock->holdsStrongLockCount == false);
+
+	/*
+	 * Adding to a memory location is not atomic, so we take a spinlock to
+	 * ensure we don't collide with someone else trying to bump the count at
+	 * the same time.
+	 *
+	 * XXX: It might be worth considering using an atomic fetch-and-add
+	 * instruction here, on architectures where that is supported.
+	 */
+
+	SpinLockAcquire(&FastPathStrongRelationLocks->mutex);
+	FastPathStrongRelationLocks->count[fasthashcode]++;//在FastPathStrongRelationLocks标记强锁
+	locallock->holdsStrongLockCount = true;//标记本地锁表持有强锁
+	StrongLockInProgress = locallock;//标记进程持有强锁
+	SpinLockRelease(&FastPathStrongRelationLocks->mutex);
+}
+```
+
+fastpath锁转换到主锁表：FastPathTransferRelationLocks
+
+- 1 轮询PGPROC，用表oid在fpRelId16数组中查询，如果找到了，用找到的锁级别去主锁表中加锁。
+- 2 清理fastpath对应的位置。
+- 3 完成转换：PGPROC记录的fastpath锁换成主锁表的锁，便于死锁检查。
+- 4 注意这里只是把fastpath中已经存在弱锁换到主锁表了，并没有给当前请求LockAcquire的对象加锁。
+
+```c
+static bool
+FastPathTransferRelationLocks(LockMethod lockMethodTable, const LOCKTAG *locktag,
+							  uint32 hashcode)
+{
+	LWLock	   *partitionLock = LockHashPartitionLock(hashcode);
+	Oid			relid = locktag->locktag_field2;
+	uint32		i;
+
+	/*
+	 * Every PGPROC that can potentially hold a fast-path lock is present in
+	 * ProcGlobal->allProcs.  Prepared transactions are not, but any
+	 * outstanding fast-path locks held by prepared transactions are
+	 * transferred to the main lock table.
+	 */
+	for (i = 0; i < ProcGlobal->allProcCount; i++)//扫描所有进程
+	{
+		PGPROC	   *proc = &ProcGlobal->allProcs[i];
+		uint32		f;
+
+		LWLockAcquire(&proc->fpInfoLock, LW_EXCLUSIVE);
+
+		/*
+		 * If the target backend isn't referencing the same database as the
+		 * lock, then we needn't examine the individual relation IDs at all;
+		 * none of them can be relevant.
+		 *
+		 * proc->databaseId is set at backend startup time and never changes
+		 * thereafter, so it might be safe to perform this test before
+		 * acquiring &proc->fpInfoLock.  In particular, it's certainly safe to
+		 * assume that if the target backend holds any fast-path locks, it
+		 * must have performed a memory-fencing operation (in particular, an
+		 * LWLock acquisition) since setting proc->databaseId.  However, it's
+		 * less clear that our backend is certain to have performed a memory
+		 * fencing operation since the other backend set proc->databaseId.  So
+		 * for now, we test it after acquiring the LWLock just to be safe.
+		 */
+		if (proc->databaseId != locktag->locktag_field1)
+		{
+			LWLockRelease(&proc->fpInfoLock);
+			continue;
+		}
+
+		for (f = 0; f < FP_LOCK_SLOTS_PER_BACKEND; f++)
+		{
+			uint32		lockmode;
+
+			/* Look for an allocated slot matching the given relid. */
+			if (relid != proc->fpRelId[f] || FAST_PATH_GET_BITS(proc, f) == 0)
+				continue;
+
+			/* Find or create lock object. */
+			LWLockAcquire(partitionLock, LW_EXCLUSIVE);
+			for (lockmode = FAST_PATH_LOCKNUMBER_OFFSET;
+				 lockmode < FAST_PATH_LOCKNUMBER_OFFSET + FAST_PATH_BITS_PER_SLOT;
+				 ++lockmode)
+			{
+				PROCLOCK   *proclock;
+
+				if (!FAST_PATH_CHECK_LOCKMODE(proc, f, lockmode))
+					continue;
+				proclock = SetupLockInTable(lockMethodTable, proc, locktag,
+											hashcode, lockmode);
+				if (!proclock)
+				{
+					LWLockRelease(partitionLock);
+					LWLockRelease(&proc->fpInfoLock);
+					return false;
+				}
+				GrantLock(proclock->tag.myLock, proclock, lockmode);
+				FAST_PATH_CLEAR_LOCKMODE(proc, f, lockmode);
+			}
+			LWLockRelease(partitionLock);
+
+			/* No need to examine remaining slots. */
+			break;
+		}
+		LWLockRelease(&proc->fpInfoLock);
+	}
+	return true;
+}
+
+```

@@ -527,6 +527,27 @@ typedef struct PROCLOCK
 	SHM_QUEUE	procLink;		/* list link in PGPROC's list of proclocks */
 } PROCLOCK;
 ```
+除此之外还有个结构，那就是本地锁表LocalLock
+```c
+typedef struct LOCALLOCK
+{
+	/* tag */
+	LOCALLOCKTAG tag;			/* unique identifier of locallock entry */
+
+	/* data */
+	uint32		hashcode;		/* copy of LOCKTAG's hash value */
+	LOCK	   *lock;			/* associated LOCK object, if any */
+	PROCLOCK   *proclock;		/* associated PROCLOCK object, if any */
+	int64		nLocks;			/* total number of times lock is held */
+	int			numLockOwners;	/* # of relevant ResourceOwners */
+	int			maxLockOwners;	/* allocated size of array */
+	LOCALLOCKOWNER *lockOwners; /* dynamically resizable array */
+	bool		holdsStrongLockCount;	/* bumped FastPathStrongRelationLocks */
+	bool		lockCleared;	/* we read all sinval msgs for lock */
+} LOCALLOCK;
+```
+
+最后就是快速路径(Fast Path)，将“弱锁”的访问保存到本进程，避免频繁的访问主锁表和进程锁表。
 
 
 
