@@ -309,33 +309,18 @@ FastPathTransferRelationLocks(LockMethod lockMethodTable, const LOCKTAG *locktag
 
 		LWLockAcquire(&proc->fpInfoLock, LW_EXCLUSIVE);
 
-		/*
-		 * If the target backend isn't referencing the same database as the
-		 * lock, then we needn't examine the individual relation IDs at all;
-		 * none of them can be relevant.
-		 *
-		 * proc->databaseId is set at backend startup time and never changes
-		 * thereafter, so it might be safe to perform this test before
-		 * acquiring &proc->fpInfoLock.  In particular, it's certainly safe to
-		 * assume that if the target backend holds any fast-path locks, it
-		 * must have performed a memory-fencing operation (in particular, an
-		 * LWLock acquisition) since setting proc->databaseId.  However, it's
-		 * less clear that our backend is certain to have performed a memory
-		 * fencing operation since the other backend set proc->databaseId.  So
-		 * for now, we test it after acquiring the LWLock just to be safe.
-		 */
-		if (proc->databaseId != locktag->locktag_field1)
+		if (proc->databaseId != locktag->locktag_field1)//如果进程数据库id和当前数据库id不一致则跳过
 		{
 			LWLockRelease(&proc->fpInfoLock);
 			continue;
 		}
 
-		for (f = 0; f < FP_LOCK_SLOTS_PER_BACKEND; f++)
+		for (f = 0; f < FP_LOCK_SLOTS_PER_BACKEND; f++)//如果是当前数据库id，则开始遍历16个槽
 		{
 			uint32		lockmode;
 
 			/* Look for an allocated slot matching the given relid. */
-			if (relid != proc->fpRelId[f] || FAST_PATH_GET_BITS(proc, f) == 0)
+			if (relid != proc->fpRelId[f] || FAST_PATH_GET_BITS(proc, f) == 0)//表的id不正确或者未加锁
 				continue;
 
 			/* Find or create lock object. */
