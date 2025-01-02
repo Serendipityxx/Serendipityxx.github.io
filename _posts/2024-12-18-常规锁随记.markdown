@@ -1,0 +1,65 @@
+---
+layout:  post
+title:   "常规锁的随记"
+date:   2024-12-18 00:41:00
+author:  'Xiangxiao'
+header-img: 'img/post-bg-2015.jpg'
+catalog:   false
+tags:
+- c
+- 常规锁
+- postgres内核
+---
+
+
+### 本篇记录一些临时看到的一些细节，等后面在总结归纳
+
+#### （1） fastpath
+fastpath 快速路径
+
+这里其实是分为两个部分的，就是强锁和弱锁
+
+在维护这个部分的时候，主要就是分为两个情况，一是申请弱锁的时候，二是申请强锁的时候：
+
+首先判断申请的是弱锁和强锁，在pg里面有两个宏定义实现了，分别如下：
+```c
+// 弱锁需要满足4个条件：
+// 1. 默认lock method；2. 对表加锁；3. 当前db；4. 锁模式小于ShareUpdateExclusiveLock（4级锁）
+#define EligibleForRelationFastPath(locktag, mode) \
+	((locktag)->locktag_lockmethodid == DEFAULT_LOCKMETHOD && \
+	(locktag)->locktag_type == LOCKTAG_RELATION && \
+	(locktag)->locktag_field1 == MyDatabaseId && \
+	MyDatabaseId != InvalidOid && \
+	(mode) < ShareUpdateExclusiveLock)
+
+// 强锁也需要满足4个条件：
+// 只有第4个为锁模式大于ShareUpdateExclusiveLock（4级锁），其余3个与弱锁相同
+#define ConflictsWithRelationFastPath(locktag, mode) \
+	((locktag)->locktag_lockmethodid == DEFAULT_LOCKMETHOD && \
+	(locktag)->locktag_type == LOCKTAG_RELATION && \
+	(locktag)->locktag_field1 != InvalidOid && \
+	(mode) > ShareUpdateExclusiveLock)
+```
+
+暂时看代码如果申请的是四级锁，那就不会动fastpath。
+
+然后就是看共享内存会发现，其实存储fastpath的共享内存只有一个，也就是`FastPathStrongRelationLocks`，这个存储的是强锁，而弱锁实际存储的位置是PGPROC结构体里面的fpLockBits成员和fpRelId成员变量，存储的结构也就是存储在fpLockBits这个64位的位图中的，每三位一组，标识八级锁对应的锁级别，而根据fpRelId的大小可以看出来，其实最多只能存储了16个锁，fpRelId顾名思义就是表的oid，也就是锁对象即锁表的oid。
+
+而反观存储强锁的共享内存结构体可以发现：
+```c
+#define FAST_PATH_STRONG_LOCK_HASH_BITS			10
+#define FAST_PATH_STRONG_LOCK_HASH_PARTITIONS \
+	(1 << FAST_PATH_STRONG_LOCK_HASH_BITS)
+
+typedef struct
+{
+	slock_t		mutex;
+	uint32		count[FAST_PATH_STRONG_LOCK_HASH_PARTITIONS];
+} FastPathStrongRelationLockData;
+
+也就是说这个count长度为2<10也就是1024个，
+
+
+```
+
+

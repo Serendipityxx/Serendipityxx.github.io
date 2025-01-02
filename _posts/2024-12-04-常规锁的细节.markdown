@@ -233,7 +233,7 @@ if (ConflictsWithRelationFastPath(locktag, lockmode))//如果申请的是一个�
 		BeginStrongLockAcquire(locallock, fasthashcode);//申请强锁
 		if (!FastPathTransferRelationLocks(lockMethodTable, locktag,
 										   hashcode))
-		{
+		{//将fastpath移动失败
 			AbortStrongLockAcquire();
 			if (locallock->nLocks == 0)
 				RemoveLocalLock(locallock);
@@ -323,7 +323,7 @@ FastPathTransferRelationLocks(LockMethod lockMethodTable, const LOCKTAG *locktag
 			if (relid != proc->fpRelId[f] || FAST_PATH_GET_BITS(proc, f) == 0)//表的id不正确或者未加锁
 				continue;
 
-			/* Find or create lock object. */
+			/* Find or create lock object. 循环检查三种弱锁 */
 			LWLockAcquire(partitionLock, LW_EXCLUSIVE);
 			for (lockmode = FAST_PATH_LOCKNUMBER_OFFSET;
 				 lockmode < FAST_PATH_LOCKNUMBER_OFFSET + FAST_PATH_BITS_PER_SLOT;
@@ -331,8 +331,10 @@ FastPathTransferRelationLocks(LockMethod lockMethodTable, const LOCKTAG *locktag
 			{
 				PROCLOCK   *proclock;
 
+				//检查某个进程是否持有某种锁，检查是否有这个是否持有弱锁
 				if (!FAST_PATH_CHECK_LOCKMODE(proc, f, lockmode))
 					continue;
+				/* 如果持有弱锁，则将这个弱锁移动到主锁表和进程锁表中去 */
 				proclock = SetupLockInTable(lockMethodTable, proc, locktag,
 											hashcode, lockmode);
 				if (!proclock)
@@ -341,8 +343,8 @@ FastPathTransferRelationLocks(LockMethod lockMethodTable, const LOCKTAG *locktag
 					LWLockRelease(&proc->fpInfoLock);
 					return false;
 				}
-				GrantLock(proclock->tag.myLock, proclock, lockmode);
-				FAST_PATH_CLEAR_LOCKMODE(proc, f, lockmode);
+				GrantLock(proclock->tag.myLock, proclock, lockmode);//增加本地锁表计数
+				FAST_PATH_CLEAR_LOCKMODE(proc, f, lockmode);//清理fastpath，也就是pgproc里面
 			}
 			LWLockRelease(partitionLock);
 
@@ -355,3 +357,108 @@ FastPathTransferRelationLocks(LockMethod lockMethodTable, const LOCKTAG *locktag
 }
 
 ```
+
+如果前面都成功了，就可以申请强锁了，
+```c
+	proclock = SetupLockInTable(lockMethodTable, MyProc, locktag,
+								hashcode, lockmode);//创建锁对象在主锁表和进程锁表中
+```
+
+lockMethodTable->conflictTab[lockmode]获得是与申请锁级别冲突的级别，例如申请1级锁：
+
+- lockmode = 1
+- lockMethodTable->conflictTab[lockmode] = 100000000
+- 1级锁和8级锁冲突。
+
+lockMethodTable->conflictTab[lockmode] & lock->waitMask表示如果当前申请的锁级别（比如我需要1级锁），和别人等在这个锁上的锁级别（别人需要8级锁，在等）不相容，那么当前申请的锁必须进入等待状态（我需要的1级锁必须等锁）。
+
+所以就造成了PG经典的锁排队场景：
+
+- 第一个人拿1级锁（select长事务）
+- 第二个人等着拿8级锁（vacuum full）
+- 后面再来一个1级锁就必须要排队了，因为强锁来了走3.3把fastpath的共享内存锁表标记了，后来的1级锁都不能在走fastpath了，走不成fastpath只能走主锁表，就会到这里等待。
+
+```c
+if (lockMethodTable->conflictTab[lockmode] & lock->waitMask)//查看申请锁与等待队列中的锁是否冲突
+	found_conflict = true;
+```
+
+然后再检查申请的锁是否需要等待
+```c
+// found_conflict = LockCheckConflicts(lockMethodTable, lockmode, lock, proclock);
+
+	found_conflict = LockCheckConflicts(lockMethodTable, lockmode, lock, proclock);
+	//检查当前锁模式与其他事务持有的锁模式是否冲突
+	if (!found_conflict)
+	{
+		/* No conflict with held or previously requested locks */
+		GrantLock(lock, proclock, lockmode);
+		GrantLockLocal(locallock, owner);
+	}
+	else
+	{
+		...
+		WaitOnLock(locallock, owner);
+		...
+	}
+
+	/*
+	 * Lock state is fully up-to-date now; if we error out after this, no
+	 * special error cleanup is required.
+	 */
+	FinishStrongLockAcquire();
+
+	LWLockRelease(partitionLock);
+	return LOCKACQUIRE_OK;
+}
+```
+
+在LockCheckConflicts函数里面去检查事务之间是否有锁冲突
+- 首先检查全局冲突：如果没有锁与我的请求冲突，那么我将获得锁。
+- 然后检查减去自己的冲突锁，如果减完之后不冲突了，则获得锁。
+- 检查是否是并行：
+	- 单进程事务且冲突，直接返回冲突。
+	- 多进程（并行）,减去具有相同group leader的锁，在判断是否冲突。
+
+如果检查完之后不冲突，则增加锁的引用计数，否则进入等待状态
+```c
+if (!found_conflict)
+	{
+		/* No conflict with held or previously requested locks */
+		GrantLock(lock, proclock, lockmode);
+		GrantLockLocal(locallock, owner);
+	}
+```
+等待，插入等待队列，在等待的时候还会触发死锁检测，调用关系是waitOnLock->ProcSleep->CheckDeadLock
+```c
+WaitOnLock(locallock, owner);
+```
+
+在插入等待队列的时候，需要注意一点，通常来说，如当前事务应该插入等待队列的末尾，但是如果本事务A除了当前申请的锁模式之外，已经持有了这个对象的其他锁模式，而且等待队列中某个事务B所等待的锁模式与当前事务A所持有的锁模式冲突，这个时候如果把事务A插入到这个等待者B的后面，则容易出现死锁，所以考虑将事务A插入到等待者的前面。
+
+进入等待队列后，锁就开始进行等待唤醒：
+- 死锁检测触发超时机制，要进行新一轮的死锁检测
+- PGPROC->waitStatus不再是STATUS_WAITING状态，也就是其他事务已经释放了锁，当前事务被唤醒
+
+
+## 常规锁的释放
+
+相较于常规锁的申请，常规锁的释放就比较简单了。
+
+- 从LockMethodLocalHash 查找LOCALLOCK，在它的owner数组里找到与当前进程对应的元素，解除LOCALLOCK与ResourceOwner之间的关联，并减小相应计数值。
+- 将LOCALLOCK的加锁次数(nLocks)减1，如果减为0了，表示当前进程不再持有锁，则后续有两种解锁途径，分别是快速锁和主锁表。
+- 对于快速锁，调用FastPathUnGrantRelationLock清除快速锁的加锁标记。如果解锁成功即可返回。
+- 如果没找到快速锁，且LOCALLOCK.lock为空，说明被转移到了主锁表里(在加锁逻辑中，当申请快速锁成功时，会把LOCALLOCK.lock置空)。
+- 查找主锁表LockMethodLockHash 以及 LockMethodProcLockHash，如果没有找到，则blog-error。找到了 调用UnGrantLock更新LOCK和PROCLOCK信息。
+- 调用CleanUpLock：要么删除主表项，要么调用ProcLockWakeup()唤醒等待者，这里会按照 WFG 中构建的 soft-edge 以及 hard-edge 依赖关系进行唤醒。
+
+
+## 参考文献和书籍
+### 连接
+- https://cloud.tencent.com/developer/article/2181226
+- https://cloud.tencent.com/developer/article/2116290
+- https://zhuanlan.zhihu.com/p/556300245
+### 书籍
+- 《PostgreSQL技术内幕——事务处理深度探索》
+
+
