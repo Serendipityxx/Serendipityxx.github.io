@@ -1,0 +1,103 @@
+---
+layout:  post
+title:   "数据脱敏插件的实现"
+date:   2025-1-21 15:48:00
+author:  'Xiangxiao'
+header-img: 'img/post-bg-2015.jpg'
+catalog:   true
+tags:
+- psql
+- 数据脱敏插件
+- postgresql插件
+- postgres内核
+---
+
+## 数据脱敏插件
+这里指postgresql_anonymizer插件的实现，本文基于anon-v1.1.1版本分析。
+数据脱敏插件是通过对某些敏感的信息按照脱敏的规则进行变形，实现敏感隐私数据的保护。而postgresql_anonymizer提供三种功能：
+- Anonymous Dumps：将屏蔽数据导出到SQL文件中
+- Static Masking：根据规则移除替换敏感数据
+- Dynamic Masking：依据规则屏蔽隐藏敏感数据
+
+## Dynamic Masking
+这里首先介绍Dynamic Masking方法。先给出一个例子：
+```sql
+-- 1开启脱敏功能
+ALTER DATABASE postgres
+SET session_preload_libraries TO 'anon';
+CREATE EXTENSION IF NOT EXISTS anon CASCADE;
+SELECT anon.init();
+
+
+-- 2创建用户u1并授权
+create role u1  login;
+
+-- 3创建测试表并插入数据
+DROP TABLE IF EXISTS test_anon_1 CASCADE;
+CREATE TABLE test_anon_1 ( id SERIAL PRIMARY KEY,order_id TEXT, name TEXT, vat_id TEXT);
+
+INSERT INTO test_anon_1
+VALUES (1,'32346322455223347683','张三', '5187108888888888'),
+       (2,'32346322455223347684','李四','5187108888889999'),
+       (3,'32346322455223347685','王五','5187108888887777') ;
+
+-- 4屏蔽角色
+SECURITY LABEL
+FOR anon ON role u1 IS 'MASKED';
+
+SECURITY LABEL FOR anon ON COLUMN test_anon_1.vat_id
+IS 'MASKED WITH FUNCTION anon.partial(vat_id,0,$$XXXX-XXXX-XXXX-$$,4)';
+SELECT anon.start_dynamic_masking();
+
+```
+
+在创建插件anon之后会执行select anon.init()函数，该函数在下面给出：
+```sql
+-- load fake data from a given path
+CREATE OR REPLACE FUNCTION anon.init(
+  datapath TEXT
+)
+RETURNS BOOLEAN
+AS $$
+DECLARE
+  datapath_check TEXT;
+  success BOOLEAN;
+BEGIN
+  IF anon.is_initialized() THEN
+    RAISE NOTICE 'The anon extension is already initialized.';
+    RETURN TRUE;
+  END IF;
+
+  SELECT bool_or(results) INTO success
+  FROM unnest(array[
+    anon.load_csv('anon.identifiers_category',datapath||'/identifiers_category.csv'),
+    anon.load_csv('anon.identifier',datapath ||'/identifier_fr_FR.csv'),
+    anon.load_csv('anon.identifier',datapath ||'/identifier_en_US.csv'),
+    anon.load_csv('anon.address',datapath ||'/address.csv'),
+    anon.load_csv('anon.city',datapath ||'/city.csv'),
+    anon.load_csv('anon.company',datapath ||'/company.csv'),
+    anon.load_csv('anon.country',datapath ||'/country.csv'),
+    anon.load_csv('anon.email', datapath ||'/email.csv'),
+    anon.load_csv('anon.first_name',datapath ||'/first_name.csv'),
+    anon.load_csv('anon.iban',datapath ||'/iban.csv'),
+    anon.load_csv('anon.last_name',datapath ||'/last_name.csv'),
+    anon.load_csv('anon.postcode',datapath ||'/postcode.csv'),
+    anon.load_csv('anon.siret',datapath ||'/siret.csv'),
+    anon.load_csv('anon.lorem_ipsum',datapath ||'/lorem_ipsum.csv')
+  ]) results;
+  RETURN success;
+
+END;
+$$
+  LANGUAGE PLPGSQL
+  VOLATILE
+  RETURNS NULL ON NULL INPUT
+  PARALLEL UNSAFE -- because load_csv is unsafe
+  SECURITY INVOKER
+  SET search_path=''
+;
+```
+init函数只是去加载了很多fake data数据，并未做其他操作。
+然后在init之后又去创建测试表和用户，这些暂且不去看，然后就到了第四步，屏蔽角色并指定脱敏策略。
+
+首先执行的是`SECURITY LABEL`语句，这个对应的是SECURITY LABEL语法，
