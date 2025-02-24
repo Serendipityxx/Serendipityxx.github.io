@@ -889,15 +889,15 @@ void
 _PG_init(void)
 {
     DefineCustomBoolVariable("testgucinextension",
-							 "test guc in extension",
-							 NULL,
-							 &testgucinextension,
-							 false,
-							 PGC_SUSET,
-							 false,
-							 NULL,
-							 NULL,
-							 NULL);
+	    "test guc in extension",
+	    NULL,
+	    &testgucinextension,
+	    false,
+	    PGC_SUSET,
+	    false,
+	    NULL,
+	    NULL,
+	    NULL);
 }
 ```
 插件对应的Makefile文件内容如下：
