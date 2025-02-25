@@ -174,11 +174,15 @@ typedef struct MemoryContextMethods
 
 在前面提到的MemoryContextData结构体其实可以看做是一个抽象类，它包含了内存上下文之间的联系，以及内存上下文进行操作的函数，可以有多种实现，但是目前只有AllocSetContext这一种实现。在C语言中实现多态和继承，AllocSetContext的起始位置必须是MemoryContextData。
 
-![MemoryContextData](image-1.png)
+![MemoryContextData](/img/postimg/image-1.png)
 
 通过这个类型提供的上下文联系，可以画出内存上下文的结构。
 
-![内存上下文的结构](image-2.png)
+![内存上下文的结构](/img/postimg/image-2.png)
+
+AllocSetContext整体结构
+
+![AllocSetContext整体结构](/img/postimg/image-3.png)
 
 
 ## 3 内存上下文的细节
@@ -256,4 +260,213 @@ fidx = AllocSetFreeIndex(size);//根据size大小获得在freelist中的位置
 	}
 ```
 
-如果freelist中没有适合的chunk，则再另外分配
+如果freelist中没有适合的chunk，则在block分配一个chunk，如果block中的内存不足的话，则需要再申请一个block然后再分配一个chunk。
+
+![alt text](/img/postimg/image-4.png)
+
+### 3.2 内存释放AllocSetFree函数细节
+
+该函数接受两个参数：
+
+- MemoryContext：内存上下文
+- pointer：需要释放的资源指针
+
+释放的逻辑是，如果释放的这个是单片块的话，则将这个块从blocks链表里面去除，然后再free这个块，如果这是一个普通的chunk的话，则直接将这个chunk释放并放如对应的freelist中。
+
+```c
+    static void
+    AllocSetFree(MemoryContext context, void *pointer)
+    {
+	AllocSet	set = (AllocSet) context;
+	AllocChunk	chunk = AllocPointerGetChunk(pointer);//获取需要释放的chunk
+
+	/* Allow access to private part of chunk header. */
+	VALGRIND_MAKE_MEM_DEFINED(chunk, ALLOCCHUNK_PRIVATE_LEN);
+
+#ifdef MEMORY_CONTEXT_CHECKING
+	/* Test for someone scribbling on unused space in chunk */
+	if (chunk->requested_size < chunk->size)
+		if (!sentinel_ok(pointer, chunk->requested_size))
+			elog(WARNING, "detected write past chunk end in %s %p",
+				 set->header.name, chunk);
+#endif
+
+	if (chunk->size > set->allocChunkLimit)//如果是单片块的话
+	{
+		/*
+		 * Big chunks are certain to have been allocated as single-chunk
+		 * blocks.  Just unlink that block and return it to malloc().
+		 */
+		AllocBlock	block = (AllocBlock) (((char *) chunk) - ALLOC_BLOCKHDRSZ);//获取单片块
+
+		/*
+		 * Try to verify that we have a sane block pointer: it should
+		 * reference the correct aset, and freeptr and endptr should point
+		 * just past the chunk.
+		 */
+		if (block->aset != set ||
+			block->freeptr != block->endptr ||
+			block->freeptr != ((char *) block) +
+			(chunk->size + ALLOC_BLOCKHDRSZ + ALLOC_CHUNKHDRSZ))
+			elog(ERROR, "could not find block containing chunk %p", chunk);
+
+		/* OK, remove block from aset's list and free it */
+		if (block->prev)
+			block->prev->next = block->next;//在链表中将这个block移除
+		else
+			set->blocks = block->next;
+		if (block->next)
+			block->next->prev = block->prev;
+
+		context->mem_allocated -= block->endptr - ((char *) block);//减去申请的块
+
+#ifdef CLOBBER_FREED_MEMORY
+		wipe_mem(block, block->freeptr - ((char *) block));
+#endif
+		free(block);//释放这个块
+	}
+	else
+	{
+		/* Normal case, put the chunk into appropriate freelist */
+		int			fidx = AllocSetFreeIndex(chunk->size);
+
+		chunk->aset = (void *) set->freelist[fidx];//直接将这个chunk链接到freelist
+
+#ifdef CLOBBER_FREED_MEMORY
+		wipe_mem(pointer, chunk->size);
+#endif
+
+#ifdef MEMORY_CONTEXT_CHECKING
+		/* Reset requested_size to 0 in chunks that are on freelist */
+		chunk->requested_size = 0;
+#endif
+		set->freelist[fidx] = chunk;
+	}
+}
+```
+
+### 3.3 AllocSetRealloc函数细节
+
+该函数接受三个参数，一是内存上下文，二是需要relloc的对象指针，三是需要relloc的大小。
+
+也是分情况来看的，当是要relloc的对象是一个单片块的时候，则需要重新计算chunk和block的大小，并使用relloc去获取结果返回；如果不是的话，就需要考虑oldsize和新提供的size大小关系，如果oldsize较大则直接返回pointer，否则的话则重新AllocSet申请一个内存片返回。
+
+### 3.4 AllocSetGetChunkSpace函数细节
+
+该函数接受两个参数，一是内存上下文，二是对象指针
+
+```c
+/*
+ * AllocSetGetChunkSpace
+ *		Given a currently-allocated chunk, determine the total space
+ *		it occupies (including all memory-allocation overhead).
+ */
+static Size
+AllocSetGetChunkSpace(MemoryContext context, void *pointer)
+{
+	AllocChunk	chunk = AllocPointerGetChunk(pointer);
+	Size		result;
+
+	VALGRIND_MAKE_MEM_DEFINED(chunk, ALLOCCHUNK_PRIVATE_LEN);//标记chunk的头部访问是合法的，防止valgrind误报
+	result = chunk->size + ALLOC_CHUNKHDRSZ;//返回的大小需要包括chunk的头部大小
+	VALGRIND_MAKE_MEM_NOACCESS(chunk, ALLOCCHUNK_PRIVATE_LEN);//恢复valgrind标记
+	return result;
+}
+```
+
+### 3.5 AllocSetIsEmpty函数
+
+该函数接受一个内存上下文变量作为参数
+
+```c
+/*
+ * AllocSetIsEmpty
+ *		Is an allocset empty of any allocated space?
+ */
+static bool
+AllocSetIsEmpty(MemoryContext context)
+{
+	/*
+	 * For now, we say "empty" only if the context is new or just reset. We
+	 * could examine the freelists to determine if all space has been freed,
+	 * but it's not really worth the trouble for present uses of this
+	 * functionality.
+	 */
+	if (context->isReset)
+		return true;
+	return false;
+}
+
+```
+
+### 3.6 AllocSetDelete函数
+
+该函数接受一个内存上下文作为参数
+
+首先判断上下文是否可以被全局freelist缓存，进行缓存，然后对block全部free。
+
+```c
+if (set->freeListIndex >= 0) {
+    // 如果上下文支持重用，则将其加入空闲列表而非直接销毁
+    AllocSetFreeList *freelist = &context_freelists[set->freeListIndex];
+
+    if (!context->isReset)
+        MemoryContextResetOnly(context); // 重置上下文到初始状态
+
+    // 若空闲列表已满，先释放旧条目
+    if (freelist->num_free >= MAX_FREE_CONTEXTS) {
+        while (freelist->first_free != NULL) {
+            AllocSetContext *oldset = freelist->first_free;
+            freelist->first_free = (AllocSetContext *) oldset->header.nextchild;
+            freelist->num_free--;
+            free(oldset); // 释放旧的空闲上下文
+        }
+    }
+
+    // 将当前上下文加入空闲列表
+    set->header.nextchild = (MemoryContext) freelist->first_free;
+    freelist->first_free = set;
+    freelist->num_free++;
+    return; // 直接返回，不销毁
+}
+```
+
+释放内存：
+
+```c
+// 遍历并释放所有内存块（跳过保留块 "keeper"）
+while (block != NULL) {
+    AllocBlock  next = block->next;
+    if (block != set->keeper) { // 保留块最后释放
+        context->mem_allocated -= block->endptr - ((char *) block); // 更新已分配内存统计
+
+#ifdef CLOBBER_FREED_MEMORY
+        wipe_mem(block, block->freeptr - ((char *) block)); // 调试时覆盖已释放内存（检测野指针）
+#endif
+        free(block); // 释放非保留块
+    }
+    block = next;
+}
+
+// 确保仅保留块未释放
+Assert(context->mem_allocated == keepersize);
+
+// 释放上下文头（包含保留块）
+free(set);
+```
+
+当然还有check函数和stats函数，这个此次不做分析，可以看代码。
+
+
+## 参考链接
+
+[PostgreSQL内存上下文系统设计概述_toptransactioncontext-CSDN博客](https://blog.csdn.net/kmblack1/article/details/136296473)
+
+[PostgreSQL内存上下文_postgresql的memorycontext-CSDN博客](https://blog.csdn.net/shiyuefei1004/article/details/108869476)
+
+[PG源码分析系列：内存上下文-阿里云开发者社区](https://developer.aliyun.com/article/711925)
+
+[深入理解 PostgreSQL 中的内存上下文（MemoryContext）](https://smartkeyerror.com/PostgreSQL-MemoryContext)
+
+[Postgresql内存池源码分析_psql内存分配源码解读-CSDN博客](https://mingjie.blog.csdn.net/article/details/89432427?spm=1001.2014.3001.5502)
+
